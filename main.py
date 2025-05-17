@@ -1,192 +1,129 @@
-#%%
+# %%
+import json
+import os
+import jwt
+import datetime
 import hashlib
-from typing import List
 
-
-# key 
-# The following discussion of HMAC security assumes the secret key has been obtained with
-# 396 an acceptable security strength using a cryptographic random bit generator — see the
-# 397 SP 800 90 series [19, 32, 33].
-
-# JWT signature: user.timestamp and timestamp , hash it, encrypt (hmac, rsa)
-# HMAC: msge
-# RSA: user.timestamp and timestamp , hash it, encrypt 
-
-BLOCK_SIZE = 512 # bits
-MIN_KEY_SIZE = 128 # allows shorter keys https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-224.ipd.pdf
-KEY_LENGTH = 256
-MAX_KEY_SIZE = BLOCK_SIZE
+CREDENTIALS_FILE = "credentials.json"
+JWT_KEY_FILE = "es256.pem"
+KEY_SIZE = 32 # bytes
+TOKEN_EXPIRATION_MINUTES = 120
 
 class Credentials:
-    def __init__(self, name: str, pwd: str, key: str, tokens: List[str]):
+    def __init__(self, id, name, pwd, key, tokens):
+        self.id = id
         self.name = name
         self.pwd = pwd
         self.key = key
         self.tokens = tokens
 
-    @classmethod
-    def from_dict(cls, data: dict) -> 'Credentials':
-        return cls(
-            name=data.get("name"),
-            pwd=data.get("pwd"),
-            key=data.get("key"),
-            tokens=data.get("tokens", [])
-        )
+    @staticmethod
+    def from_dict(d):
+        return Credentials(d["id"], d["name"], d["pwd"], d["key"], d.get("tokens", []))
 
-# credenciais definidas em credentials.json 
-def load_credentials(filename="credentials.json") -> Credentials | None:
-    import os
-    if not os.path.exists(filename):
-        print(f"Error: {filename} not found.")
-        return None
-    with open(filename, 'r') as f:
-        data = json.load(f)
-        return Credentials.from_dict(data)
-
-
-def hmac_sha256(key: bytes, message: bytes) -> bytes:    
-    # Step 1, 2, 3: Normalize key to block size B
-    if len(key) > BLOCK_SIZE:
-         # Step 2
-        key = hashlib.sha256(key).digest()
-    if len(key) < BLOCK_SIZE:
-        # Step 3
-        key = key + b'\x00' * (BLOCK_SIZE - len(key)) 
-    K0 = key  # Step 1/2/3 result
-
-    # Step 4: K0 ⊕ ipad (0x36)
-    ipad = bytes((x ^ 0x36) for x in K0)
-
-    # Step 5: (K0 ⊕ ipad) || message
-    step5 = ipad + message
-
-    # Step 6: H((K0 ⊕ ipad) || message)
-    inner_hash = hashlib.sha256(step5).digest()
-
-    # Step 7: K0 ⊕ opad (0x5c)
-    opad = bytes((x ^ 0x5c) for x in K0)
-
-    # Step 8: (K0 ⊕ opad) || inner_hash
-    step8 = opad + inner_hash
-
-    # Step 9: Final HMAC = H(step8)
-    return hashlib.sha256(step8).digest()
-
-def test_hmac():
-    ning = load_credentials()
-    key = ning.key
-
-    token = ning.tokens[0].encode('utf-8')
-
-    pwd = "64d473a05b66bb916793217fcbcb6c2cddce166523fb54909cd9ba058f1e7b9b".encode('utf-8')
-
-    print(hmac_sha256(pwd ,token) == hmac_sha256(pwd ,token))
-    print(hmac_sha256(pwd ,token) == hmac_sha256( "64d473a05b66bb916793217fcbcb6c2cddce166523fb54909cd9ba058f1e7b9b".encode('utf-8'), "12 3".encode('utf-8')))
-test_hmac()
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "pwd": self.pwd,
+            "key": self.key,
+            "tokens": self.tokens
+        }
 #%%
 
-def key_from_image():
-    key_material = SHA-256(image_bytes)
-    hmac_key = HKDF(
-    input_key_material=key_material,
-    salt=optional_salt,  # for additional security
-    info=optional_context,  # binding the key to a specific use
-    length=desired_key_length
-    
-)
+def generate_priv_keys_asym(filename="rsa.pem"):
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives import serialization
 
-# %%
-def random_key() -> bytes:
-    """
-    Gera chave (não faz parte da função HMAC)
-    """
+    private_key = ec.generate_private_key(ec.SECP256R1(), None)
+    pem = private_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption())
+    with open(filename, "wb") as f: f.write(pem)
+    return 
+
+def generate_hmac_key(filename="hmac.pem", key_size=KEY_SIZE):
     import os
-    return os.urandom(KEY_LENGTH)
+    key = os.urandom(key_size)
+    with open(filename, "wb") as f:
+        f.write(key)
+    print(f"[HMAC KEY ({KEY_SIZE} bytes) in {filename}]")
+    return key
+generate_hmac_key()
+# %%
+def generate_ec_jwt_key(filename="es256.pem"):
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives import serialization
 
-def base64url_encode(data: bytes) -> str:
-    """
-    Base64URL encoding for JWT (without padding)
+    key = ec.generate_private_key(ec.SECP256R1())
+    with open(filename, "wb") as f:
+        f.write(key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption()
+        ))
+
+generate_ec_jwt_key()
+# %%
+
+def load_user_by_name(name: str) -> Credentials | None:
+    if not os.path.exists(CREDENTIALS_FILE):
+        raise  Exception("credentials file missing, should be `credentials.json`")
+
+    with open(CREDENTIALS_FILE, "r") as f:
+        users = json.load(f)
+    for user in users:
+        if user["name"] == name:
+            return Credentials.from_dict(user)
+    return None
+load_user_by_name("ningning").name
+#%%
+def save_user_token(name: str, token: str):
+    with open(CREDENTIALS_FILE, "r") as f:
+        users = json.load(f)
+    for user in users:
+        if user["name"] == name:
+            user["tokens"].append(token)
+            break
+    with open(CREDENTIALS_FILE, "w") as f:
+        json.dump(users, f, indent=4)
+
+def generate_jwt(user: Credentials) -> str:
+    with open(JWT_KEY_FILE, "r") as f:
+        private_key = f.read()
+
+    payload = {
+        "name": user.name,
+        "exp": datetime.datetime.now() + datetime.timedelta(minutes=TOKEN_EXPIRATION_MINUTES),
+        "iat": datetime.datetime.now()
+    }
+
+    token = jwt.encode(payload, private_key, algorithm="ES256")
+
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+    return token
+
+def api_autenticacao(username: str, password: str) -> str | None:
+    user = load_user_by_name(username)
+    if not user:
+        print("User not found.")
+        return None
+# client should send hashed password but hashing again to ensure no clear password storing 
+    hashed_input_pwd = hashlib.sha256(password.encode()).hexdigest() 
+    if hashed_input_pwd != user.pwd:
+        print("Invalid password.")
+        return None
     
-    Args:
-        data: Bytes to encode
-        
-    Returns:
-        Base64URL encoded string
-    """
-    import base64
-    return base64.urlsafe_b64encode(data).decode('utf-8').replace('=', '')
+    print("User credentials found")
 
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import json
-from urllib.parse import urlparse, parse_qs
-
-# Armazenamento em memória (simula banco de dados)
-items = []
-
-class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
-    def _send_json_response(self, data, status=200):
-        response = json.dumps(data).encode('utf-8')
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(response)))
-        self.end_headers()
-        self.wfile.write(response)
-
-    def do_GET(self):
-        parsed_path = urlparse(self.path)
-        if parsed_path.path == '/items':
-            self._send_json_response(items)
-        else:
-            self._send_json_response({'error': 'Not Found'}, status=404)
-
-    def do_POST(self):
-        parsed_path = urlparse(self.path)
-        if parsed_path.path == '/items':
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-            try:
-                data = json.loads(body)
-                if 'name' in data:
-                    item = {'id': len(items) + 1, 'name': data['name']}
-                    items.append(item)
-                    self._send_json_response(item, status=201)
-                else:
-                    self._send_json_response({'error': 'Missing "name" field'}, status=400)
-            except json.JSONDecodeError:
-                self._send_json_response({'error': 'Invalid JSON'}, status=400)
-        else:
-            self._send_json_response({'error': 'Not Found'}, status=404)
+    token = generate_jwt(user)
+    save_user_token(user.name, token)
+    return token
+#%%
+em_claro = load_user_by_name("ningning")
+api_autenticacao(hashlib.sha256(em_claro.name.encode()).hexdigest() , hashlib.sha256(em_claro.pwd.encode()).hexdigest())
 
 
-# Example usage for JWT
-if __name__ == "__main__":
-    # Generate a secure key (should be kept secret!)
-    secret_key = random_key()
-    print(f"Generated key (hex): {secret_key.hex()}")
-    
-    # Example JWT payload
-    header = '{"alg":"HS256","typ":"JWT"}'
-    payload = '{"sub":"1234567890","name":"John Doe","iat":1516239022}'
-    
-    # Prepare JWT components
-    encoded_header = base64url_encode(header.encode('utf-8'))
-    encoded_payload = base64url_encode(payload.encode('utf-8'))
-    message_to_sign = f"{encoded_header}.{encoded_payload}".encode('utf-8')
-    
-    # Create HMAC signature
-    signature = hmac_sha256(secret_key, message_to_sign)
-    encoded_signature = base64url_encode(signature)
-    
-    # Final JWT
-    jwt = f"{encoded_header}.{encoded_payload}.{encoded_signature}"
-    print(f"Example JWT: {jwt}")
-
-
-def run(server_class=HTTPServer, handler_class=SimpleHTTPRequestHandler, port=8000):
-    server_address = ('', port)
-    httpd = server_class(server_address, handler_class)
-    print(f'Servidor rodando em http://localhost:{port}')
-    httpd.serve_forever()
-
-if __name__ == '__main__':
-    run()
+protegido = load_user_by_name("9e77404183826933ff4ad68a71511f85324835b2c8433dc6b26e614df4290bdf")
+api_autenticacao(protegido.name ,  protegido.pwd)
+hashlib.sha256(protegido.pwd.encode()).hexdigest()
