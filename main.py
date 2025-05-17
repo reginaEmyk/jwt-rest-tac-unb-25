@@ -1,5 +1,6 @@
 #%%
 import hashlib
+from typing import List
 
 
 # key 
@@ -16,23 +17,31 @@ MIN_KEY_SIZE = 128 # allows shorter keys https://nvlpubs.nist.gov/nistpubs/Speci
 KEY_LENGTH = 256
 MAX_KEY_SIZE = BLOCK_SIZE
 
-class Credentials: {
-    "name": "Fancy opulence",
-    "pwd": "ning",
-    "key": "64d473a05b66bb916793217fcbcb6c2cddce166523fb54909cd9ba058f1e7b9b", 
-    "tokens": [
-        "123"
-    ]
-}
+class Credentials:
+    def __init__(self, name: str, pwd: str, key: str, tokens: List[str]):
+        self.name = name
+        self.pwd = pwd
+        self.key = key
+        self.tokens = tokens
 
-# Load credentials from json file
-def load_credentials(filename="credentials.json"):
-    import os 
+    @classmethod
+    def from_dict(cls, data: dict) -> 'Credentials':
+        return cls(
+            name=data.get("name"),
+            pwd=data.get("pwd"),
+            key=data.get("key"),
+            tokens=data.get("tokens", [])
+        )
+
+# credenciais definidas em credentials.json 
+def load_credentials(filename="credentials.json") -> Credentials | None:
+    import os
     if not os.path.exists(filename):
         print(f"Error: {filename} not found.")
         return None
     with open(filename, 'r') as f:
-        return json.load(f)
+        data = json.load(f)
+        return Credentials.from_dict(data)
 
 
 def hmac_sha256(key: bytes, message: bytes) -> bytes:    
@@ -64,8 +73,11 @@ def hmac_sha256(key: bytes, message: bytes) -> bytes:
     return hashlib.sha256(step8).digest()
 
 def test_hmac():
-    ning = Credentials()
-    token = "123".encode('utf-8')
+    ning = load_credentials()
+    key = ning.key
+
+    token = ning.tokens[0].encode('utf-8')
+
     pwd = "64d473a05b66bb916793217fcbcb6c2cddce166523fb54909cd9ba058f1e7b9b".encode('utf-8')
 
     print(hmac_sha256(pwd ,token) == hmac_sha256(pwd ,token))
